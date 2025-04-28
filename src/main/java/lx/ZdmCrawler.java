@@ -119,6 +119,31 @@ public class ZdmCrawler {
         HashSet<String> whiteWords = Utils.readFile("./white_words.txt");
         whiteWords.removeIf(StringUtils::isBlank);
 
+        // 新增配置解析逻辑
+        Map<String, Integer> votedMap = new HashMap<>();
+        Map<String, Integer> commentsMap = new HashMap<>();
+
+        whiteWords.forEach(word -> {
+            String[] parts = word.split(",");
+            String keyword = parts[0].trim();
+
+            // 初始化默认值
+            int voted = minVoted;
+            int comments = minComments;
+
+            // 当存在完整配置时覆盖默认值
+            if (parts.length >= 3) {
+                try {
+                    voted = Integer.parseInt(parts[1].trim());
+                    comments = Integer.parseInt(parts[2].trim());
+                } catch (NumberFormatException ignored) {
+                    // 格式错误保持默认值
+                }
+            }
+            votedMap.put(keyword, voted);
+            commentsMap.put(keyword, comments);
+        });
+        Set<String> whiteKeywords = votedMap.keySet();
         if (whiteWords.isEmpty()) {
             //如果白词文件为空，则使用原来的黑词模式
             if (detail)
@@ -128,19 +153,48 @@ public class ZdmCrawler {
             //如果白词文件不为空，则启用新的白词模式，仅发送包含白名单中的商品优惠信息
             if (detail)
                 System.out.println("whiteWords is not empty, running in whiteWords mode. whiteWords list:\n" + String.join(",", whiteWords));
-            zdms = StreamUtils.filter(zdms, z -> !StringUtils.isBlank(StreamUtils.findFirst(whiteWords, w -> z.getTitle().contains(w))));
+            zdms = StreamUtils.filter(zdms, z -> !StringUtils.isBlank(StreamUtils.findFirst(whiteKeywords, w -> z.getTitle().contains(w))));
         }
 
         //从数据库中取出已推送的优惠信息id
         Collection<String> pushedIds = ZdmMapper.pushedIds();
 
-        //执行其他过滤规则
-        List<Zdm> filtered = StreamUtils.filter(zdms, z ->
-                Integer.parseInt(z.getVoted()) > minVoted //值的数量
-                        && Integer.parseInt(z.getComments()) > minComments //评论的数量
-                        && !z.getPrice().contains("前") //不是前xxx名的耍猴抢购
-                        && !pushedIds.contains(z.getArticleId()) //不是已经推送过的
-        );
+        // 执行其他过滤规则
+        Set<Zdm> uniqueFiltered = new LinkedHashSet<>(); // 使用LinkedHashSet保持顺序且去重
+        Set<String> pushedIdSet = new HashSet<>(pushedIds); // 转换为HashSet提升查询效率
+
+        for (Zdm z : zdms) {
+            String title = z.getTitle();
+            String price = z.getPrice();
+            String votedStr = z.getVoted();
+            String commentsStr = z.getComments();
+
+            // 提前处理数值转换
+            try {
+                int voted = Integer.parseInt(votedStr);
+                int comments = Integer.parseInt(commentsStr);
+
+                for (String whiteKeyword : whiteKeywords) {
+                    if (title.contains(whiteKeyword)) {
+                        boolean isValid = voted > votedMap.get(whiteKeyword)
+                                && comments > commentsMap.get(whiteKeyword)
+                                && (price == null || !price.contains("前")) // 处理price可能为null的情况
+                                && !pushedIdSet.contains(z.getArticleId());
+
+                        if (isValid) {
+                            uniqueFiltered.add(z);
+                            break; // 匹配到任一关键字即可退出当前循环
+                        }
+                    }
+                }
+            } catch (NumberFormatException e) {
+                // 记录日志或处理无效数值情况
+                System.err.println("Invalid number format for ZDM: " + z.getArticleId());
+            }
+        }
+
+        List<Zdm> filtered = new ArrayList<>(uniqueFiltered);
+
 
         filtered.forEach(o -> o.setPushed(false));
         if (detail) {
