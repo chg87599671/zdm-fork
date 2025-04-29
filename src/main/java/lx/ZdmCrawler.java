@@ -193,7 +193,9 @@ public class ZdmCrawler {
             }
         }
 
-        List<Zdm> filtered = new ArrayList<>(uniqueFiltered);
+        List<Zdm> filtered = new ArrayList<>(uniqueFiltered.stream()
+        .filter(z -> blackWords.stream().noneMatch(black -> z.getTitle().contains(black)))
+        .collect(Collectors.toList()));
 
 
         filtered.forEach(o -> o.setPushed(false));
